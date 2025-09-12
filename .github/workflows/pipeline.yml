@@ -36,21 +36,16 @@ jobs:
       - name: 🧪 Run Tests
         run: mvn test
 
-      - name: 🛠 Build Docker Image
-        run: docker build -t ${{ env.IMAGE_NAME }} .
-
-      - name: 🔐 Trivy Scan (Image)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.IMAGE_NAME }}
-          format: table
-          exit-code: 0
-          severity: HIGH,CRITICAL
-
       - name: 🔐 Azure Login
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: 🛠 Build Docker Image
+        run: docker build -t ${{ env.IMAGE_NAME }} .
 
       - name: 🔐 Docker Login to ACR
         run: az acr login --name ${{ env.REGISTRY_NAME }}
@@ -60,6 +55,14 @@ jobs:
 
       - name: 📤 Push to Azure Container Registry
         run: docker push ${{ env.REGISTRY_IMAGE }}
+
+      - name: 🔐 Trivy Scan (Image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}
+          format: table
+          exit-code: 0
+          severity: HIGH,CRITICAL
 
       - name: 📦 Upload Artifact
         uses: actions/upload-artifact@v4
