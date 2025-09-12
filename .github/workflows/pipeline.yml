@@ -36,13 +36,14 @@ jobs:
       - name: 🧪 Run Tests
         run: mvn test
 
-      - name: 🔐 Azure Login
+      - name: 🔐 Azure Login (Service Principal)
         uses: azure/login@v2
         with:
+          auth-type: service-principal
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: 🛠 Build Docker Image
         run: docker build -t ${{ env.IMAGE_NAME }} .
