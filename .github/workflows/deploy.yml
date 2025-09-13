@@ -35,11 +35,42 @@ jobs:
           rm -rf .terraform
           rm -f .terraform.lock.hcl
 
-      - name: Validar Sintaxe e Plano
+      - name: Criar Storage Account e container para backend
+        run: |
+          RESOURCE_GROUP="rg-tfstate"
+          STORAGE_ACCOUNT="tfstatecurso$RANDOM"
+          CONTAINER_NAME="tfstate"
+          LOCATION="eastus"
+
+          az group create --name $RESOURCE_GROUP --location $LOCATION
+          az storage account create \
+            --name $STORAGE_ACCOUNT \
+            --resource-group $RESOURCE_GROUP \
+            --location $LOCATION \
+            --sku Standard_LRS \
+            --encryption-services blob
+          az storage container create \
+            --name $CONTAINER_NAME \
+            --account-name $STORAGE_ACCOUNT \
+            --auth-mode login
+
+          echo "BACKEND_RESOURCE_GROUP=$RESOURCE_GROUP" >> $GITHUB_ENV
+          echo "BACKEND_STORAGE_ACCOUNT=$STORAGE_ACCOUNT" >> $GITHUB_ENV
+          echo "BACKEND_CONTAINER=$CONTAINER_NAME" >> $GITHUB_ENV
+
+      - name: Terraform Init
         working-directory: infra
         run: |
           export ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}
-          terraform init -reconfigure
+          terraform init \
+            -backend-config="resource_group_name=$BACKEND_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$BACKEND_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$BACKEND_CONTAINER" \
+            -reconfigure
+
+      - name: Validar Sintaxe e Plano
+        working-directory: infra
+        run: |
           terraform fmt -check
           terraform validate
           terraform plan -out=tfplan
@@ -73,11 +104,27 @@ jobs:
           rm -rf .terraform
           rm -f .terraform.lock.hcl
 
-      - name: Aplicar Terraform
+      - name: Terraform Init
         working-directory: infra
         run: |
           export ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}
-          terraform init -reconfigure
+          terraform init -reconfigure \
+            -backend-config="resource_group_name=$BACKEND_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$BACKEND_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$BACKEND_CONTAINER"
+
+      - name: Desbloquear lock (se houver)
+        working-directory: infra
+        run: |
+          LOCK_INFO=$(terraform show -json 2>/dev/null | jq -r '.values.root_module.resources[]? | select(.type=="azurerm_storage_account") | .address' || echo "")
+          if [ -n "$LOCK_INFO" ]; then
+            echo "Tentando desbloquear lock antigo..."
+            terraform force-unlock -force "$LOCK_INFO" || echo "Nenhum lock ativo"
+          fi
+
+      - name: Aplicar Terraform
+        working-directory: infra
+        run: |
           terraform apply -auto-approve
 
       - name: Capturar Outputs
@@ -93,107 +140,4 @@ jobs:
       - name: Definir Variáveis de Ambiente
         run: |
           echo "VM_NAME=${{ steps.output_vm.outputs.vm_name }}" >> $GITHUB_ENV
-          echo "ADMIN_USERNAME=${{ steps.output_vm.outputs.admin_username }}" >> $GITHUB_ENV
-          echo "PUBLIC_IP=${{ steps.output_vm.outputs.public_ip }}" >> $GITHUB_ENV
-          echo "SSH_COMMAND=ssh ${{ steps.output_vm.outputs.admin_username }}@${{ steps.output_vm.outputs.public_ip }}" >> $GITHUB_ENV
-
-      - name: Instalar Ansible e sshpass
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible sshpass
-
-      - name: Criar Inventário Ansible
-        run: |
-          echo "[vm]" > inventory
-          echo "${{ env.PUBLIC_IP }} ansible_user=${{ env.ADMIN_USERNAME }} ansible_password=${{ secrets.ADMIN_PASSWORD }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory
-
-      - name: Executar Playbook Ansible
-        run: |
-          ansible-playbook -i inventory ansible/playbook.yml --extra-vars "ansible_sudo_pass=${{ secrets.ADMIN_PASSWORD }}"
-
-  post-tests:
-    if: ${{ github.event.inputs.destroy == 'false' }}
-    name: ✅ Pós-Testes de Infra
-    needs: deploy
-    runs-on: ubuntu-latest
-    env:
-      PUBLIC_IP: ${{ needs.deploy.outputs.publicIP }}
-      VM_NAME: ${{ needs.deploy.outputs.vmName }}
-      NSG_NAME: ${{ needs.deploy.outputs.nsgName }}
-      RESOURCE_GROUP: ${{ needs.deploy.outputs.resourceGroup }}
-    steps:
-      - name: Login no Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Testar Swagger na Porta 8081
-        run: |
-          echo "Aguardando aplicação subir com Swagger..."
-          sleep 30
-          response=$(curl -s -o /dev/null -w "%{http_code}" http://$PUBLIC_IP:8081/swagger-ui/index.html)
-          if [ "$response" != "200" ]; then
-            echo "❌ Swagger não respondeu como esperado. Status HTTP: $response"
-            exit 1
-          else
-            echo "✅ Swagger disponível em /swagger-ui/index.html na porta 8081!"
-          fi
-
-      - name: Verificar status da VM
-        run: |
-          status=$(az vm get-instance-view \
-            --name "$VM_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query "instanceView.statuses[?code=='PowerState/running'].displayStatus" \
-            --output tsv)
-          echo "Status da VM: $status"
-          if [ "$status" != "VM running" ]; then
-              echo "❌ A VM não está em execução!"
-              exit 1
-          else
-              echo "✅ VM está rodando com sucesso!"
-          fi
-
-      - name: Verificar regra da NSG para porta 8081
-        run: |
-          result=$(az network nsg rule list \
-            --nsg-name "$NSG_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --query "[?destinationPortRange=='8081' && access=='Allow']")
-          if [ "$result" = "[]" ]; then
-            echo "❌ Porta 8081 não está liberada na NSG!"
-            exit 1
-          else
-            echo "✅ Porta 8081 está liberada corretamente na NSG!"
-          fi
-
-  destroy:
-    if: ${{ github.event.inputs.destroy == 'true' }}
-    name: 🧨 Destruir Infraestrutura
-    runs-on: ubuntu-latest
-    env:
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-    steps:
-      - name: Checkout do código
-        uses: actions/checkout@v3
-
-      - name: Login no Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Instalar Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Limpar Terraform antigo
-        working-directory: infra
-        run: |
-          rm -rf .terraform
-          rm -f .terraform.lock.hcl
-
-      - name: Executar Terraform Destroy
-        working-directory: infra
-        run: |
-          export ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}
-          terraform init -reconfigure
-          terraform destroy -auto-approve
+          echo "ADMIN_USERNAME=${{ steps.output_
