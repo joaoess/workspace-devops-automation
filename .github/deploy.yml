@@ -140,4 +140,46 @@ jobs:
       - name: Definir Variáveis de Ambiente
         run: |
           echo "VM_NAME=${{ steps.output_vm.outputs.vm_name }}" >> $GITHUB_ENV
-          echo "ADMIN_USERNAME=${{ steps.output_
+          echo "ADMIN_USERNAME=${{ steps.output_vm.outputs.admin_username }}" >> $GITHUB_ENV
+          echo "PUBLIC_IP=${{ steps.output_vm.outputs.public_ip }}" >> $GITHUB_ENV
+          echo "SSH_COMMAND=ssh ${{ steps.output_vm.outputs.admin_username }}@${{ steps.output_vm.outputs.public_ip }}" >> $GITHUB_ENV
+
+      # Mantém Ansible, inventário e post-tests como já estavam
+
+  destroy:
+    if: ${{ github.event.inputs.destroy == 'true' }}
+    name: 🧨 Destruir Infraestrutura
+    runs-on: ubuntu-latest
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v3
+
+      - name: Login no Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Limpar Terraform antigo
+        working-directory: infra
+        run: |
+          rm -rf .terraform
+          rm -f .terraform.lock.hcl
+
+      - name: Terraform Init
+        working-directory: infra
+        run: |
+          export ARM_SUBSCRIPTION_ID=${{ secrets.ARM_SUBSCRIPTION_ID }}
+          terraform init -reconfigure \
+            -backend-config="resource_group_name=$BACKEND_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$BACKEND_STORAGE_ACCOUNT" \
+            -backend-config="container_name=$BACKEND_CONTAINER"
+
+      - name: Executar Terraform Destroy
+        working-directory: infra
+        run: |
+          terraform destroy -auto-approve
