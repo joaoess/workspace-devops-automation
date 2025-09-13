@@ -29,6 +29,12 @@ jobs:
       - name: Instalar Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Limpar Terraform antigo
+        working-directory: infra
+        run: |
+          rm -rf .terraform
+          rm -f .terraform.lock.hcl
+
       - name: Validar Sintaxe e Plano
         working-directory: infra
         run: |
@@ -60,6 +66,12 @@ jobs:
 
       - name: Instalar Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Limpar Terraform antigo
+        working-directory: infra
+        run: |
+          rm -rf .terraform
+          rm -f .terraform.lock.hcl
 
       - name: Aplicar Terraform
         working-directory: infra
@@ -172,6 +184,12 @@ jobs:
 
       - name: Instalar Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Limpar Terraform antigo
+        working-directory: infra
+        run: |
+          rm -rf .terraform
+          rm -f .terraform.lock.hcl
 
       - name: Executar Terraform Destroy
         working-directory: infra
